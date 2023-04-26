@@ -1,3 +1,4 @@
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE ViewPatterns, ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -121,6 +122,7 @@ import Hint.Type(DeclHint,Idea(..),rawIdea,warn,suggest,Severity(..),toRefactSrc
 import Data.Data
 import Data.List.Extra
 import Data.Generics.Uniplate.DataOnly
+import Data.Set qualified as Set
 import Refact.Types
 
 import GHC.Hs
@@ -133,11 +135,20 @@ import Language.Haskell.GhclibParserEx.GHC.Hs.Pat
 
 bracketHint :: DeclHint
 bracketHint _ _ x =
-  concatMap (\x -> bracket prettyExpr isPartialAtom True x ++ dollar x) (childrenBi (descendBi splices $ descendBi annotations x) :: [LHsExpr GhcPs]) ++
-  concatMap (bracket unsafePrettyPrint (\_ _ -> False) False) (childrenBi x :: [LHsType GhcPs]) ++
-  concatMap (bracket unsafePrettyPrint (\_ _ -> False) False) (childrenBi x :: [LPat GhcPs]) ++
+  concatMap (\x -> bracket prettyExpr isPartialAtom True (const False) x ++ dollar x) (childrenBi (descendBi splices $ descendBi annotations x) :: [LHsExpr GhcPs]) ++
+  concatMap (bracket unsafePrettyPrint (\_ _ -> False) False isInSingleConstraintContext) (childrenBi x :: [LHsType GhcPs]) ++
+  concatMap (bracket unsafePrettyPrint (\_ _ -> False) False (const False)) (childrenBi x :: [LPat GhcPs]) ++
   concatMap fieldDecl (childrenBi x)
    where
+     isInSingleConstraintContext = \x -> case getLocA x of
+       RealSrcSpan span _ -> span `Set.member` singleConstraintContextSpans
+       _ -> False
+       where
+         singleConstraintContextSpans = Set.fromList
+           [ span
+           | L _ [getLocA -> RealSrcSpan span _] <- universeBi x :: [LHsContext GhcPs]
+           ]
+
      -- Brackets the roots of annotations are fine, so we strip them.
      annotations :: AnnDecl GhcPs -> AnnDecl GhcPs
      annotations= descendBi $ \x -> case (x :: LHsExpr GhcPs) of
@@ -180,14 +191,17 @@ isPartialAtom _ (L _ (HsUntypedSplice _ HsUntypedSpliceExpr{})) = True
 isPartialAtom (Just (L _ HsUntypedSplice{})) _ = True
 isPartialAtom _ x = isRecConstr x || isRecUpdate x
 
-bracket :: forall a . (Data a, Outputable a, Brackets (LocatedA a)) => (LocatedA a -> String) -> (Maybe (LocatedA a) -> LocatedA a -> Bool) -> Bool -> LocatedA a -> [Idea]
-bracket pretty isPartialAtom root = f Nothing
+bracket :: forall a . (Data a, Outputable a, Brackets (LocatedA a)) => (LocatedA a -> String) -> (Maybe (LocatedA a) -> LocatedA a -> Bool) -> Bool -> (LocatedA a -> Bool) -> LocatedA a -> [Idea]
+bracket pretty isPartialAtom root isInSingleConstraintContext = f Nothing
   where
     msg = "Redundant bracket"
     -- 'f' is a (generic) function over types in 'Brackets
     -- (expressions, patterns and types). Arguments are, 'f (Maybe
     -- (index, parent, gen)) child'.
     f :: (Data a, Outputable a, Brackets (LocatedA a)) => Maybe (Int, LocatedA a , LocatedA a -> LocatedA a) -> LocatedA a -> [Idea]
+    f _ o@(remParens' -> Just x)
+      | isAtom x && isInSingleConstraintContext o
+      = bracketError "Redundant constraint context bracket" o x : g x
     -- No context. Removing parentheses from 'x' succeeds?
     f Nothing o@(remParens' -> Just x)
       -- If at the root, or 'x' is an atom, 'x' parens are redundant.

@@ -27,3 +27,19 @@ incAll ys x = map (+x) fs
 
 OUTPUT
 No hints
+
+---------------------------------------------------------------------
+RUN tests/bracket-has-callstack.hs
+FILE tests/bracket-has-callstack.hs
+
+foo :: (HasCallStack) => ()
+foo = ()
+
+OUTPUT
+tests/bracket-has-callstack.hs:2:8-21: Warning: Redundant constraint context bracket
+Found:
+  (HasCallStack)
+Perhaps:
+  HasCallStack
+
+1 hint
